@@ -1,0 +1,37 @@
+{
+  "name": "pi-customisations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Combined Pi extension replacing the quota footer and LLM session name with a tree-derived label.",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
+    "typescript": "^5"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}
