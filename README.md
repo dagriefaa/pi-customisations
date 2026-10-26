@@ -2,12 +2,12 @@
 
 A combined Pi extension that replaces two existing customisations:
 
-1. **Custom footer** — replaces the whole footer in Pi's TUI with the cost / context / throughput / model layout from the local `ollama-usage-footer.ts` extension, but with all quota, plan, balance and HTTP calls removed.
-2. **Session label / terminal title** — replaces `pi-session-name`'s LLM-generated title with the `/tree` row text of the first user message on the active branch. No network calls, no name file, no `pi.setSessionName()`.
+1. **Custom footer** — replaces the whole footer in Pi's TUI with the cost / context / throughput / model layout from `~/.pi/agent/extensions/ollama-usage-footer.ts`, but with all quota, plan, balance and HTTP calls removed.
+2. **Session label / terminal title** — replaces the `npm:pi-session-name` package's LLM-generated title with the `/tree` row text of the first user message on the active branch. No network calls, no name file, no `pi.setSessionName()`.
 
 ## Required Pi version
 
-Pi **1.4.0** or newer (tested against `1.4.0`). The extension uses the `ExtensionAPI`/`ExtensionContext` surface and `ReadonlyFooterDataProvider` introduced in that release.
+Pi **1.4.0** or newer (tested against `1.4.0`). The extension uses the `ExtensionAPI`/`ExtensionContext` surface introduced in that release.
 
 ## What it does
 
@@ -30,7 +30,10 @@ The label is computed directly from `ctx.sessionManager.getBranch()`:
 - Flattens the content exactly as `/tree` does: strings pass through; arrays keep only `type: "text"` blocks, concatenated with `""`.
 - Slices to 200 characters **before** replacing `\n`/`\t` with spaces and trimming.
 - Appends `…` when the slice truncated the raw text.
+- Prepends `[label] ` when the entry has a user-set label, exactly as `/tree` renders it.
 - Falls back to `(new session)` when the active branch has no user message yet (or its content is empty).
+
+**Note on the `(new session)` fallback:** for an image-only or otherwise empty-content first user message, `/tree` renders an empty row after the `user: ` prefix. A blank window/title label would be useless, so this extension intentionally falls back to `(new session)` instead. That is the only deliberate divergence from the `/tree` display.
 
 The same label is used:
 
@@ -48,6 +51,7 @@ The label and title are refreshed on:
 - `message_end` when a user message lands
 - `input` (restores the title after Pi overwrites it at startup)
 - `agent_start` / `agent_end` (busy/idle glyph)
+- `model_select` / `thinking_level_select` (footer model/thinking line, mid-idle)
 
 ## Files
 
@@ -74,15 +78,25 @@ The package lives outside `~/.pi/agent/extensions` (e.g. at `/home/rk/dev/pi-cus
 pi --extension /home/rk/dev/pi-customisations
 ```
 
-To make it permanent, add it to your Pi settings (`~/.pi/agent/settings.json`) under `packages` or `extensions`. For example, as a local path:
+`pi --extension <path>` loads the package via `package.json` (`pi.extensions`), so the local form is the same shape as a git/npm package.
+
+To make it permanent, add it to your Pi settings (`~/.pi/agent/settings.json`) under `packages` or `extensions`. For example, as a local package path:
 
 ```json
 {
-  "extensions": ["/home/rk/dev/pi-customisations/src/index.ts"]
+  "packages": ["/home/rk/dev/pi-customisations"]
 }
 ```
 
-or as a package reference once it is published / installed:
+or as a git package:
+
+```json
+{
+  "packages": ["git:github.com/yourname/pi-customisations"]
+}
+```
+
+or as an npm package reference once it is published / installed:
 
 ```json
 {
@@ -90,10 +104,12 @@ or as a package reference once it is published / installed:
 }
 ```
 
-After adding it, run `pi` (or `/reload` inside Pi). You can then delete/disable:
+After adding it, run `pi` (or `/reload` inside Pi). **Removing the old customisations is required** or their output will overlap/conflict:
 
-- `~/.pi/agent/extensions/ollama-usage-footer.ts`
-- the `npm:pi-session-name` package entry in settings
+- delete `~/.pi/agent/extensions/ollama-usage-footer.ts`
+- remove the `npm:pi-session-name` package entry from settings
+
+Do not load `src/index.ts` directly via `extensions` — use the package path form so Pi reads `package.json` and resolves peer dependencies correctly.
 
 ## Verification
 
@@ -104,8 +120,8 @@ npm test            # node --experimental-strip-types --test test/*.test.ts
 
 ## Dependencies
 
-- Runtime: none. The extension makes **zero** network calls, zero LLM calls, and reads no API keys.
+- Runtime: **none**. The extension makes **zero** network calls, **zero** LLM/quota calls, and reads **no** API keys or credentials.
 - Type-only / host-provided peer dependencies: `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`.
 - Dev dependencies: the same host packages (for type resolution) plus `typescript`.
 
-`@earendil-works/pi-tui` is imported at runtime only for `visibleWidth`/`truncateToWidth`, which are required to match Pi's own footer width handling.
+`@earendil-works/pi-tui` is imported at runtime only for `visibleWidth`/`truncateToWidth`, which are required to match Pi's own footer width handling. Pi's extension loader aliases this host-provided peer package to the running copy, so no extra install is needed.

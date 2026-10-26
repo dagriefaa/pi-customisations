@@ -18,17 +18,31 @@ export default function piCustomisations(pi: ExtensionAPI) {
   let isRunning = false;
   let customFooterEnabled = true;
   let lastLabel: string | undefined;
+  let lastTitle: string | undefined;
   let requestFooterRender: (() => void) | undefined;
+  let isShutdown = false;
 
   function computeLabel(ctx: ExtensionContext): string {
-    return labelForBranch(ctx.sessionManager.getBranch());
+    return labelForBranch(ctx.sessionManager.getBranch(), (id) => ctx.sessionManager.getLabel(id));
   }
 
-  function refresh(ctx: ExtensionContext) {
+  function refresh(
+    ctx: ExtensionContext,
+    { forceTitle = false, forceFooter = false }: { forceTitle?: boolean; forceFooter?: boolean } = {},
+  ) {
+    if (isShutdown) return;
     const label = computeLabel(ctx);
-    lastLabel = label;
-    ctx.ui.setTitle(formatTitle(label, ctx.cwd, isRunning));
-    requestFooterRender?.();
+    const title = formatTitle(label, ctx.cwd, isRunning);
+    const labelChanged = label !== lastLabel;
+    const titleChanged = title !== lastTitle;
+    if (labelChanged || titleChanged || forceTitle) {
+      lastLabel = label;
+      lastTitle = title;
+      ctx.ui.setTitle(title);
+    }
+    if (labelChanged || forceFooter) {
+      requestFooterRender?.();
+    }
   }
 
   function installFooter(ctx: ExtensionContext) {
@@ -46,6 +60,9 @@ export default function piCustomisations(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     isRunning = false;
+    isShutdown = false;
+    lastLabel = undefined;
+    lastTitle = undefined;
     if (customFooterEnabled) {
       installFooter(ctx);
     }
@@ -66,9 +83,13 @@ export default function piCustomisations(pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role === "user") refresh(ctx);
   });
-  pi.on("input", async (_event, ctx) => refresh(ctx));
+  pi.on("input", async (_event, ctx) => refresh(ctx, { forceTitle: true }));
+
+  pi.on("model_select", async (_event, ctx) => refresh(ctx, { forceFooter: true }));
+  pi.on("thinking_level_select", async (_event, ctx) => refresh(ctx, { forceFooter: true }));
 
   pi.on("session_shutdown", async () => {
+    isShutdown = true;
     requestFooterRender = undefined;
   });
 

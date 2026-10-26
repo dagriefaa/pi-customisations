@@ -29,6 +29,28 @@ describe("session-label", () => {
     assert.equal(labelForBranch(branch as any), "hello world");
   });
 
+  it("prepends [label] when the first user entry has a user-set label", () => {
+    const entry = {
+      type: "message" as const,
+      message: { role: "user" as const, content: "hello world" },
+      id: "entry-1",
+    };
+    const branch = [entry];
+    const getLabel = (id: string) => (id === "entry-1" ? "bookmark" : undefined);
+    assert.equal(labelForBranch(branch as any, getLabel), "[bookmark] hello world");
+  });
+
+  it("keeps the (new session) fallback for an image-only message even with a label", () => {
+    const entry = {
+      type: "message" as const,
+      message: { role: "user" as const, content: [{ type: "image" }] },
+      id: "entry-1",
+    };
+    const branch = [entry];
+    const getLabel = (id: string) => (id === "entry-1" ? "bookmark" : undefined);
+    assert.equal(labelForBranch(branch as any, getLabel), NEW_SESSION_LABEL);
+  });
+
   it("flattens newlines and tabs to spaces before truncating", () => {
     const branch = [userEntry("line1\nline2\tline3")];
     assert.equal(labelForBranch(branch as any), "line1 line2 line3");
@@ -104,6 +126,7 @@ describe("footer renderer", () => {
     contextPercent?: number | null;
     contextWindow?: number;
     modelId?: string;
+    provider?: string;
     reasoning?: boolean;
     thinkingLevel?: string;
   } = {}) {
@@ -140,7 +163,7 @@ describe("footer renderer", () => {
       model: options.modelId
         ? {
             id: options.modelId,
-            provider: "test-provider",
+            provider: options.provider ?? "test-provider",
             contextWindow: options.contextWindow ?? 200000,
             reasoning: options.reasoning ?? false,
           }
@@ -196,6 +219,40 @@ describe("footer renderer", () => {
     const lines = component.render(120);
     assert.equal(lines[2], "alpha status zeta status");
   });
+
+  it("adapts line 2 layout to narrow, exact-fit and wide widths", () => {
+    const ctx = makeCtx({
+      modelId: "m",
+      contextWindow: 200000,
+    }) as any;
+    const factory = buildFooterFactory(ctx, () => "label", () => {}, "/home/rk");
+    const component = factory({ requestRender: () => {} }, makeTheme() as any, makeFooterData());
+    // statsLeft = "$0.000 ?/200k" (13 chars), right = "m" (1 char), minPadding = 2.
+    assert.equal(component.render(20)[1], "$0.000 ?/200k      m");
+    assert.equal(component.render(16)[1], "$0.000 ?/200k  m");
+    assert.equal(component.render(14)[1], "$0.000 ?/200k");
+  });
+
+  it("prefixes the model with the provider name when more than one provider is available", () => {
+    const ctx = makeCtx({
+      modelId: "m",
+      provider: "p",
+      contextWindow: 200000,
+    }) as any;
+    const factory = buildFooterFactory(ctx, () => "label", () => {}, "/home/rk");
+    const component = factory(
+      { requestRender: () => {} },
+      makeTheme() as any,
+      {
+        getGitBranch: () => null,
+        getAvailableProviderCount: () => 2,
+        getExtensionStatuses: () => new Map(),
+        onBranchChange: () => () => {},
+      },
+    );
+    const lines = component.render(20);
+    assert.equal(lines[1], "$0.000 ?/200k  (p) m");
+  });
 });
 
 describe("extension wiring", () => {
@@ -240,6 +297,7 @@ describe("extension wiring", () => {
         getCwd: () => "/home/rk/dev/nova",
         getBranch: () => [],
         getEntries: () => [],
+        getLabel: (_id: string) => undefined,
       },
       getContextUsage: () => undefined,
       model: undefined,
@@ -257,6 +315,8 @@ describe("extension wiring", () => {
     assert.ok(pi.handlers.has("session_tree"));
     assert.ok(pi.handlers.has("message_end"));
     assert.ok(pi.handlers.has("input"));
+    assert.ok(pi.handlers.has("model_select"));
+    assert.ok(pi.handlers.has("thinking_level_select"));
   });
 
   it("installs the custom footer on session_start and sets the title", async () => {
@@ -299,5 +359,59 @@ describe("extension wiring", () => {
 
     await pi.handlers.get("agent_end")({ type: "agent_end", messages: [] }, ctx);
     assert.match(pi.calls.setTitle[1], /^✳ /);
+  });
+
+  it("does not request footer render after session_shutdown", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+    const factory = pi.calls.setFooter[0];
+    const renders: string[] = [];
+    const theme = { fg: (_color: string, text: string) => text };
+    const footerData = {
+      getGitBranch: () => null,
+      getAvailableProviderCount: () => 1,
+      getExtensionStatuses: () => new Map(),
+      onBranchChange: () => () => {},
+    };
+    factory({ requestRender: () => renders.push("render") }, theme as any, footerData as any);
+
+    await pi.handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
+
+    await pi.handlers.get("message_end")(
+      { type: "message_end", message: { role: "user", content: "hi" } as any },
+      ctx,
+    );
+    await pi.handlers.get("input")({ type: "input" } as any, ctx);
+
+    assert.equal(renders.length, 0);
+  });
+
+  it("input restores the title without re-rendering the footer when the label is unchanged", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+    const factory = pi.calls.setFooter[0];
+    const renders: string[] = [];
+    const theme = { fg: (_color: string, text: string) => text };
+    const footerData = {
+      getGitBranch: () => null,
+      getAvailableProviderCount: () => 1,
+      getExtensionStatuses: () => new Map(),
+      onBranchChange: () => () => {},
+    };
+    factory({ requestRender: () => renders.push("render") }, theme as any, footerData as any);
+
+    pi.calls.setTitle.length = 0;
+    renders.length = 0;
+
+    await pi.handlers.get("input")({ type: "input" } as any, ctx);
+
+    assert.equal(pi.calls.setTitle.length, 1);
+    assert.equal(renders.length, 0);
   });
 });
