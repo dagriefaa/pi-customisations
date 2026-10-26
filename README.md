@@ -35,10 +35,14 @@ The label is computed directly from `ctx.sessionManager.getBranch()`:
 
 **Note on the `(new session)` fallback:** for an image-only or otherwise empty-content first user message, `/tree` renders an empty row after the `user: ` prefix. A blank window/title label would be useless, so this extension intentionally falls back to `(new session)` instead. That is the only deliberate divergence from the `/tree` display.
 
-The same label is used:
+The label is used in footer line 1 as `<tree-label>`.
 
-- in footer line 1 as `<tree-label>`, and
-- in the terminal/window title as `${isRunning ? "·" : "✳"} ${label} - ${basename(cwd)}`.
+The terminal/window title uses a **first-line-only** variant of the same label:
+`${isRunning ? "·" : "✳"} ${firstLineLabel} - ${basename(cwd)}`. The first line is the
+first non-blank line of the raw first user message, taken before `/tree` flattens
+newlines/tabs into spaces. It keeps the same 200-character slice + `…` rule, the
+same `[label] ` prefix, and the same `(new session)` fallback when there is no
+text content.
 
 The title glyph switches between `·` (busy) and `✳` (idle) on `agent_start`/`agent_end`.
 

@@ -40,6 +40,14 @@ export function userRowText(content: unknown): { text: string; truncated: boolea
   return { text: normalizeRow(sliced), truncated: full.length > TREE_TEXT_LIMIT };
 }
 
+function firstNonBlankLine(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return null;
+}
+
 /**
  * Compute the session label from the active branch: the `/tree` row text of
  * the first user message, with the leading `user: ` prefix already omitted,
@@ -66,4 +74,32 @@ export function labelForBranch(
   const entryLabel = getLabel?.(first.id);
   const prefix = entryLabel ? `[${entryLabel}] ` : "";
   return truncated ? `${prefix}${text}…` : `${prefix}${text}`;
+}
+
+/**
+ * Compute the title label from the active branch: the first non-blank line of
+ * the first user message, sliced to 200 characters, with `…` appended when
+ * truncated, and `[label] ` prepended when the entry has a user-set label.
+ *
+ * Unlike `labelForBranch`, this does not flatten newlines/tabs into spaces; it
+ * uses only the first line of the raw text so the terminal title stays short.
+ */
+export function titleLabelForBranch(
+  branch: readonly SessionEntry[],
+  getLabel?: (id: string) => string | undefined,
+): string {
+  const first = branch.find(
+    (e): e is SessionEntry & { type: "message"; message: { role: "user"; content: unknown } } =>
+      e.type === "message" && (e as { message?: { role?: string } }).message?.role === "user",
+  );
+  if (!first) return NEW_SESSION_LABEL;
+  const raw = flattenContent(first.message.content);
+  const firstLine = firstNonBlankLine(raw);
+  if (!firstLine) return NEW_SESSION_LABEL;
+  const entryLabel = getLabel?.(first.id);
+  const prefix = entryLabel ? `[${entryLabel}] ` : "";
+  if (firstLine.length > TREE_TEXT_LIMIT) {
+    return `${prefix}${firstLine.slice(0, TREE_TEXT_LIMIT)}…`;
+  }
+  return `${prefix}${firstLine}`;
 }

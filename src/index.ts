@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { buildFooterFactory } from "./footer.ts";
-import { labelForBranch } from "./session-label.ts";
+import { labelForBranch, titleLabelForBranch } from "./session-label.ts";
 
 function sanitizeTitle(text: string): string {
   return text.replace(/[\x00-\x1f\x7f]/g, " ").trim();
@@ -26,13 +26,19 @@ export default function piCustomisations(pi: ExtensionAPI) {
     return labelForBranch(ctx.sessionManager.getBranch(), (id) => ctx.sessionManager.getLabel(id));
   }
 
+  function computeTitle(ctx: ExtensionContext): string {
+    return titleLabelForBranch(ctx.sessionManager.getBranch(), (id) =>
+      ctx.sessionManager.getLabel(id),
+    );
+  }
+
   function refresh(
     ctx: ExtensionContext,
     { forceTitle = false, forceFooter = false }: { forceTitle?: boolean; forceFooter?: boolean } = {},
   ) {
     if (isShutdown) return;
     const label = computeLabel(ctx);
-    const title = formatTitle(label, ctx.cwd, isRunning);
+    const title = formatTitle(computeTitle(ctx), ctx.cwd, isRunning);
     const labelChanged = label !== lastLabel;
     const titleChanged = title !== lastTitle;
     if (labelChanged || titleChanged || forceTitle) {

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import extension from "../src/index.ts";
 import {
   labelForBranch,
+  titleLabelForBranch,
   userRowText,
   NEW_SESSION_LABEL,
 } from "../src/session-label.ts";
@@ -100,6 +101,71 @@ describe("session-label", () => {
     // The /tree row would be "user: hello". labelForBranch returns just "hello".
     const branch = [userEntry("user: hello")];
     assert.equal(labelForBranch(branch as any), "user: hello");
+  });
+});
+
+describe("title-label", () => {
+  function userEntry(text: string) {
+    return {
+      type: "message" as const,
+      message: { role: "user" as const, content: text },
+    };
+  }
+
+  it("uses only the first line of a multi-line message", () => {
+    const branch = [userEntry("line one\nline two\nline three")];
+    assert.equal(titleLabelForBranch(branch as any), "line one");
+  });
+
+  it("does not insert spaces where newlines were", () => {
+    const branch = [userEntry("line one\nline two")];
+    assert.equal(titleLabelForBranch(branch as any), "line one");
+    assert.equal(titleLabelForBranch(branch as any).includes("line one line"), false);
+  });
+
+  it("skips leading blank lines and takes the first non-blank line", () => {
+    const branch = [userEntry("\n\nfirst real line\nsecond")];
+    assert.equal(titleLabelForBranch(branch as any), "first real line");
+  });
+
+  it("truncates a single line over 200 chars and appends an ellipsis", () => {
+    const long = "a".repeat(250);
+    const branch = [userEntry(long)];
+    const expected = "a".repeat(200) + "…";
+    assert.equal(titleLabelForBranch(branch as any), expected);
+  });
+
+  it("leaves a short single line unchanged", () => {
+    const branch = [userEntry("short")];
+    assert.equal(titleLabelForBranch(branch as any), "short");
+  });
+
+  it("falls back to (new session) for an empty message", () => {
+    const branch = [userEntry("")];
+    assert.equal(titleLabelForBranch(branch as any), NEW_SESSION_LABEL);
+  });
+
+  it("falls back to (new session) for an image-only message", () => {
+    const branch = [
+      { type: "message" as const, message: { role: "user" as const, content: [{ type: "image" }] } },
+    ];
+    assert.equal(titleLabelForBranch(branch as any), NEW_SESSION_LABEL);
+  });
+
+  it("keeps the [label] prefix on the first non-blank line", () => {
+    const entry = {
+      type: "message" as const,
+      message: { role: "user" as const, content: "\n\nhello\nworld" },
+      id: "entry-1",
+    };
+    const getLabel = (id: string) => (id === "entry-1" ? "bookmark" : undefined);
+    assert.equal(titleLabelForBranch([entry] as any, getLabel), "[bookmark] hello");
+  });
+
+  it("differs from the footer label for a multi-line message", () => {
+    const branch = [userEntry("line one\nline two\nline three")];
+    assert.equal(labelForBranch(branch as any), "line one line two line three");
+    assert.equal(titleLabelForBranch(branch as any), "line one");
   });
 });
 
