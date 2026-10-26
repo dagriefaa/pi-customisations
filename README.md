@@ -38,13 +38,13 @@ The label is computed directly from `ctx.sessionManager.getBranch()`:
 The label is used in footer line 1 as `<tree-label>`.
 
 The terminal/window title uses a **first-line-only** variant of the same label:
-`${isRunning ? "·" : "✳"} ${firstLineLabel} - ${basename(cwd)}`. The first line is the
+`${isRunning ? "▶️" : "⏸️"} ${firstLineLabel} - ${basename(cwd)}`. The first line is the
 first non-blank line of the raw first user message, taken before `/tree` flattens
 newlines/tabs into spaces. It keeps the same 200-character slice + `…` rule, the
 same `[label] ` prefix, and the same `(new session)` fallback when there is no
 text content.
 
-The title glyph switches between `·` (busy) and `✳` (idle) on `agent_start`/`agent_end`.
+The title glyph switches between `▶️` (running) and `⏸️` (idle/stopped). The running state is true while the parent agent is streaming, and also while any subagent run owned by this session is still live — including background/async runs and foreground `/`-slash subagent runs. Live subagent runs are detected from the shared `pi.events` bus and seeded once per session from the `pi-subagents` RPC `status` reply.
 
 ### Triggers
 
@@ -54,7 +54,7 @@ The label and title are refreshed on:
 - `session_tree` (branch navigation inside a file)
 - `message_end` when a user message lands
 - `input` (restores the title after Pi overwrites it at startup)
-- `agent_start` / `agent_end` (busy/idle glyph)
+- `agent_start` / `agent_end` (running/idle glyph, also driven by live subagent runs)
 - `model_select` / `thinking_level_select` (footer model/thinking line, mid-idle)
 
 ## Files

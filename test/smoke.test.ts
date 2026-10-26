@@ -325,6 +325,9 @@ describe("extension wiring", () => {
   function createMockPi() {
     const handlers = new Map<string, any>();
     const commands = new Map<string, any>();
+    const busHandlers = new Map<string, Set<(data: unknown) => void>>();
+    const emitted = new Map<string, unknown[]>();
+
     const calls = {
       setFooter: [] as any[],
       setTitle: [] as string[],
@@ -339,6 +342,20 @@ describe("extension wiring", () => {
       notify: (message: string, type?: any) => calls.notify.push([message, type]),
     };
 
+    const events = {
+      on: (event: string, handler: (data: unknown) => void) => {
+        if (!busHandlers.has(event)) busHandlers.set(event, new Set());
+        busHandlers.get(event)!.add(handler);
+        return () => busHandlers.get(event)?.delete(handler);
+      },
+      emit: (event: string, data: unknown) => {
+        emitted.set(event, [...(emitted.get(event) ?? []), data]);
+        busHandlers.get(event)?.forEach((handler) => handler(data));
+      },
+      busHandlers,
+      emitted,
+    };
+
     const pi = {
       on: (event: string, handler: any) => {
         handlers.set(event, handler);
@@ -347,6 +364,7 @@ describe("extension wiring", () => {
       registerCommand: (name: string, options: any) => {
         commands.set(name, options);
       },
+      events,
       handlers,
       commands,
       calls,
@@ -391,7 +409,7 @@ describe("extension wiring", () => {
     const ctx = makeCtx(pi);
     await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
     assert.equal(pi.calls.setFooter.length, 1);
-    assert.match(pi.calls.setTitle[0], /✳ \(new session\) - nova/);
+    assert.match(pi.calls.setTitle[0], /⏸️ \(new session\) - nova/);
   });
 
   it("/footer toggles the custom footer off and back on", async () => {
@@ -421,10 +439,132 @@ describe("extension wiring", () => {
     pi.calls.setTitle.length = 0;
 
     await pi.handlers.get("agent_start")({ type: "agent_start" }, ctx);
-    assert.match(pi.calls.setTitle[0], /^· /);
+    assert.match(pi.calls.setTitle[0], /^▶️ /);
 
     await pi.handlers.get("agent_end")({ type: "agent_end", messages: [] }, ctx);
-    assert.match(pi.calls.setTitle[1], /^✳ /);
+    assert.match(pi.calls.setTitle[1], /^⏸️ /);
+  });
+
+  it("shows ▶️ while an async subagent is live and ⏸️ when it completes", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    pi.events.emit("subagent:async-started", { id: "run-a", sessionId: "session-a", mode: "single" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-complete", { id: "run-a", sessionId: "session-a", state: "complete" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^⏸️ /);
+  });
+
+  it("keeps ▶️ while any overlapping async run is still live", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    pi.events.emit("subagent:async-started", { id: "run-a" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-started", { id: "run-b" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-complete", { id: "run-a", state: "complete" });
+    // run-b still live.
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-complete", { id: "run-b", state: "complete" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^⏸️ /);
+  });
+
+  it("ignores malformed or unknown event payloads without throwing", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    assert.doesNotThrow(() => pi.events.emit("subagent:async-started", null));
+    assert.doesNotThrow(() => pi.events.emit("subagent:async-started", {}));
+    assert.doesNotThrow(() => pi.events.emit("subagent:async-started", { id: 123 }));
+    assert.doesNotThrow(() => pi.events.emit("subagent:async-complete", undefined));
+    assert.doesNotThrow(() => pi.events.emit("subagent:slash:started", { requestId: null }));
+    assert.doesNotThrow(() => pi.events.emit("subagent:slash:response", {}));
+
+    assert.equal(pi.calls.setTitle.length, 0);
+  });
+
+  it("seeds live runs from the RPC status reply on session_start", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    const requests = pi.events.emitted.get("subagents:rpc:v1:request") ?? [];
+    assert.equal(requests.length, 1);
+    const request = requests[0] as { requestId: string };
+
+    pi.events.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+      version: 1,
+      requestId: request.requestId,
+      success: true,
+      data: {
+        asyncSnapshot: {
+          runs: [
+            { id: "restored-1", state: "running", mode: "single" },
+            { id: "restored-2", state: "complete", mode: "single" },
+            { id: "restored-3", state: "queued", mode: "chain" },
+          ],
+        },
+      },
+    });
+
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-complete", { id: "restored-1", state: "complete" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:async-complete", { id: "restored-3", state: "complete" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^⏸️ /);
+  });
+
+  it("seeds nothing when the RPC status reply has no asyncSnapshot", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    const request = (pi.events.emitted.get("subagents:rpc:v1:request") ?? [])[0] as {
+      requestId: string;
+    };
+
+    pi.events.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+      version: 1,
+      requestId: request.requestId,
+      success: true,
+      data: {},
+    });
+
+    assert.equal(pi.calls.setTitle.length, 0);
+  });
+
+  it("counts a foreground slash subagent as live", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    pi.calls.setTitle.length = 0;
+
+    pi.events.emit("subagent:slash:started", { requestId: "slash-1" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^▶️ /);
+
+    pi.events.emit("subagent:slash:response", { requestId: "slash-1" });
+    assert.match(pi.calls.setTitle[pi.calls.setTitle.length - 1], /^⏸️ /);
   });
 
   it("does not request footer render after session_shutdown", async () => {
@@ -453,6 +593,28 @@ describe("extension wiring", () => {
     await pi.handlers.get("input")({ type: "input" } as any, ctx);
 
     assert.equal(renders.length, 0);
+  });
+
+  it("shuts down cleanly: clears state, unsubscribes, and does not setTitle afterwards", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+    pi.events.emit("subagent:async-started", { id: "live-run" });
+    pi.calls.setTitle.length = 0;
+
+    await pi.handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
+
+    assert.equal(pi.events.busHandlers.get("subagent:async-started")?.size ?? 0, 0);
+    assert.equal(pi.events.busHandlers.get("subagent:async-complete")?.size ?? 0, 0);
+    assert.equal(pi.events.busHandlers.get("subagent:slash:started")?.size ?? 0, 0);
+    assert.equal(pi.events.busHandlers.get("subagent:slash:response")?.size ?? 0, 0);
+
+    pi.events.emit("subagent:async-started", { id: "late-run" });
+    pi.events.emit("subagent:async-complete", { id: "late-run" });
+
+    assert.equal(pi.calls.setTitle.length, 0);
   });
 
   it("input restores the title without re-rendering the footer when the label is unchanged", async () => {
