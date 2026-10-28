@@ -102,6 +102,43 @@ describe("session-label", () => {
     const branch = [userEntry("user: hello")];
     assert.equal(labelForBranch(branch as any), "user: hello");
   });
+
+  it("prefers a manually set session name over the derived tree label", () => {
+    const branch = [userEntry("hello world")];
+    assert.equal(labelForBranch(branch as any, undefined, "my case work"), "my case work");
+  });
+
+  it("prefers the session name even when the first user entry has a [label]", () => {
+    const entry = {
+      type: "message" as const,
+      message: { role: "user" as const, content: "hello world" },
+      id: "entry-1",
+    };
+    const getLabel = (id: string) => (id === "entry-1" ? "bookmark" : undefined);
+    assert.equal(labelForBranch([entry] as any, getLabel, "my case work"), "my case work");
+  });
+
+  it("uses the session name for an empty or image-only first message", () => {
+    const empty = [userEntry("")];
+    const imageOnly = [
+      { type: "message" as const, message: { role: "user" as const, content: [{ type: "image" }] } },
+    ];
+    assert.equal(labelForBranch(empty as any, undefined, "named"), "named");
+    assert.equal(labelForBranch(imageOnly as any, undefined, "named"), "named");
+    assert.equal(labelForBranch([] as any, undefined, "named"), "named");
+  });
+
+  it("falls back to the tree label when the session name is blank", () => {
+    const branch = [userEntry("hello world")];
+    assert.equal(labelForBranch(branch as any, undefined, undefined), "hello world");
+    assert.equal(labelForBranch(branch as any, undefined, ""), "hello world");
+    assert.equal(labelForBranch(branch as any, undefined, "   "), "hello world");
+  });
+
+  it("collapses newlines in a session name to single spaces", () => {
+    const branch = [userEntry("hello world")];
+    assert.equal(labelForBranch(branch as any, undefined, "two\nlines"), "two lines");
+  });
 });
 
 describe("title-label", () => {
@@ -166,6 +203,17 @@ describe("title-label", () => {
     const branch = [userEntry("line one\nline two\nline three")];
     assert.equal(labelForBranch(branch as any), "line one line two line three");
     assert.equal(titleLabelForBranch(branch as any), "line one");
+  });
+
+  it("prefers a manually set session name over the derived first line", () => {
+    const branch = [userEntry("line one\nline two")];
+    assert.equal(titleLabelForBranch(branch as any, undefined, "my case work"), "my case work");
+  });
+
+  it("keeps a long session name intact instead of slicing it like message text", () => {
+    const branch = [userEntry("hello")];
+    const name = "n".repeat(250);
+    assert.equal(titleLabelForBranch(branch as any, undefined, name), name);
   });
 });
 
@@ -373,21 +421,95 @@ describe("extension wiring", () => {
     return pi;
   }
 
-  function makeCtx(pi: ReturnType<typeof createMockPi>) {
+  function makeCtx(
+    pi: ReturnType<typeof createMockPi>,
+    options: {
+      name?: string;
+      branch?: unknown[];
+      entryLabel?: string;
+    } = {},
+  ) {
     return {
       mode: "tui" as const,
       cwd: "/home/rk/dev/nova",
       sessionManager: {
         getCwd: () => "/home/rk/dev/nova",
-        getBranch: () => [],
+        getBranch: () => options.branch ?? [],
         getEntries: () => [],
-        getLabel: (_id: string) => undefined,
+        getLabel: (_id: string) => options.entryLabel,
+        getSessionName: () => options.name,
       },
       getContextUsage: () => undefined,
       model: undefined,
       ui: pi.ui,
     };
   }
+
+  it("shows a manually set session name over the tree label in title and footer", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const ctx = makeCtx(pi, {
+      name: "investigate footer",
+      branch: [{ type: "message", message: { role: "user", content: "hello world" } }],
+    });
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+    assert.equal(pi.calls.setTitle.at(-1), "⏸️ investigate footer - nova");
+
+    const theme = { fg: (_color: string, text: string) => text };
+    const footerData = {
+      getGitBranch: () => "main",
+      getAvailableProviderCount: () => 1,
+      getExtensionStatuses: () => new Map(),
+      onBranchChange: () => () => {},
+    };
+    const footer = pi.calls.setFooter[0](
+      { requestRender: () => {} },
+      theme as any,
+      footerData as any,
+    );
+    assert.match(footer.render(80)[0], /^~\/dev\/nova \(main\) • investigate footer$/);
+  });
+
+  it("applies /name (session_info_changed) to the title and footer, and reverts when cleared", async () => {
+    const pi = createMockPi();
+    extension(pi as any);
+    const options: { name?: string; branch?: unknown[] } = {
+      branch: [{ type: "message", message: { role: "user", content: "hello world" } }],
+    };
+    const ctx = makeCtx(pi, options);
+    await pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    assert.equal(pi.calls.setTitle.at(-1), "⏸️ hello world - nova");
+
+    const factory = pi.calls.setFooter[0];
+    const renders: string[] = [];
+    const theme = { fg: (_color: string, text: string) => text };
+    const footerData = {
+      getGitBranch: () => null,
+      getAvailableProviderCount: () => 1,
+      getExtensionStatuses: () => new Map(),
+      onBranchChange: () => () => {},
+    };
+    const footer = factory(
+      { requestRender: () => renders.push("render") },
+      theme as any,
+      footerData as any,
+    );
+    renders.length = 0;
+
+    options.name = "renamed case";
+    await pi.handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "renamed case" }, ctx);
+
+    // Pi's own updateTerminalTitle runs first, so the extension must force the title.
+    assert.equal(pi.calls.setTitle.at(-1), "⏸️ renamed case - nova");
+    assert.equal(renders.length, 1);
+    assert.match(footer.render(80)[0], /• renamed case$/);
+
+    options.name = undefined;
+    await pi.handlers.get("session_info_changed")({ type: "session_info_changed", name: undefined }, ctx);
+    assert.equal(pi.calls.setTitle.at(-1), "⏸️ hello world - nova");
+    assert.match(footer.render(80)[0], /• hello world$/);
+  });
 
   it("registers the /footer command and session lifecycle handlers", () => {
     const pi = createMockPi();
@@ -397,6 +519,7 @@ describe("extension wiring", () => {
     assert.ok(pi.handlers.has("agent_start"));
     assert.ok(pi.handlers.has("agent_end"));
     assert.ok(pi.handlers.has("session_tree"));
+    assert.ok(pi.handlers.has("session_info_changed"));
     assert.ok(pi.handlers.has("message_end"));
     assert.ok(pi.handlers.has("input"));
     assert.ok(pi.handlers.has("model_select"));

@@ -42,12 +42,18 @@ export default function piCustomisations(pi: ExtensionAPI) {
   let seedUnsub: (() => void) | undefined;
 
   function computeLabel(ctx: ExtensionContext): string {
-    return labelForBranch(ctx.sessionManager.getBranch(), (id) => ctx.sessionManager.getLabel(id));
+    return labelForBranch(
+      ctx.sessionManager.getBranch(),
+      (id) => ctx.sessionManager.getLabel(id),
+      ctx.sessionManager.getSessionName(),
+    );
   }
 
   function computeTitle(ctx: ExtensionContext): string {
-    return titleLabelForBranch(ctx.sessionManager.getBranch(), (id) =>
-      ctx.sessionManager.getLabel(id),
+    return titleLabelForBranch(
+      ctx.sessionManager.getBranch(),
+      (id) => ctx.sessionManager.getLabel(id),
+      ctx.sessionManager.getSessionName(),
     );
   }
 
@@ -262,6 +268,13 @@ export default function piCustomisations(pi: ExtensionAPI) {
   });
 
   pi.on("session_tree", async (_event, ctx) => refresh(ctx));
+  // `/name <name>` (and a cleared name) rewrites the session title through Pi's own
+  // updateTerminalTitle first, so force both title and footer here.
+  pi.on("session_info_changed", async (_event, ctx) => {
+    if (isShutdown) return;
+    activeCtx = ctx;
+    refresh(ctx, { forceTitle: true, forceFooter: true });
+  });
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role === "user") refresh(ctx);
   });
